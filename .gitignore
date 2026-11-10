@@ -4,3 +4,4 @@ node_modules/
 spike/.venv/
 spike/out/
 *.ipa
+builds/
