@@ -16,6 +16,6 @@ console.log(`\nPhone URL: http://${pick.ip}:8081   (interface "${pick.name}")\n`
 const child = spawn(["npx expo start --dev-client --lan", ...process.argv.slice(2)].join(" "), {
   stdio: "inherit",
   shell: true,
-  env: { ...process.env, REACT_NATIVE_PACKAGER_HOSTNAME: pick.ip },
+  env: { ...process.env, APP_VARIANT: "dev", REACT_NATIVE_PACKAGER_HOSTNAME: pick.ip },
 });
 child.on("exit", (code) => process.exit(code ?? 0));

@@ -1,6 +1,7 @@
-# Builds an UNSIGNED Debug dev-client .ipa on a macOS runner. Sideloadly signs it with your free Apple ID.
-# Debug builds don't embed the JS bundle: the app loads JS from Metro on your PC.
-name: iOS dev build
+# Builds UNSIGNED .ipa files on macOS runners. Sideloadly signs them with your free Apple ID.
+#   release -> "LiveInterpreter": Release build, JS bundled inside, works anywhere (no PC needed)
+#   dev     -> "Interp Dev": Debug dev client that loads JS from Metro on your PC
+name: iOS build
 
 on:
   push:
@@ -14,8 +15,25 @@ concurrency:
 
 jobs:
   build:
+    name: ${{ matrix.variant }}
     runs-on: macos-26 # Xcode 26.x; Expo SDK 58 needs Xcode >= 26.4
-    timeout-minutes: 60
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: release
+            configuration: Release
+            app_variant: ""
+            artifact: LiveInterpreter-ipa
+            ipa: LiveInterpreter.ipa
+          - variant: dev
+            configuration: Debug
+            app_variant: dev
+            artifact: LiveInterpreter-dev-ipa
+            ipa: LiveInterpreter-Dev.ipa
+    env:
+      APP_VARIANT: ${{ matrix.app_variant }}
     defaults:
       run:
         working-directory: app
@@ -41,7 +59,7 @@ jobs:
         if: steps.nm.outputs.cache-hit != 'true'
         run: npm ci
 
-      # Generates app/ios from app.json (it is not committed).
+      # Generates app/ios from app.json + app.config.ts (it is not committed).
       - name: expo prebuild
         run: npx expo prebuild --platform ios --no-install
 
@@ -49,13 +67,13 @@ jobs:
         uses: actions/cache@v6
         with:
           path: app/ios/Pods
-          key: pods-${{ runner.os }}-${{ hashFiles('app/package-lock.json', 'app/ios/Podfile', 'app/app.json') }}
+          key: pods-${{ matrix.variant }}-${{ runner.os }}-${{ hashFiles('app/package-lock.json', 'app/ios/Podfile', 'app/app.json') }}
 
       - name: pod install
         working-directory: app/ios
         run: pod install
 
-      - name: xcodebuild (Debug, iphoneos, unsigned)
+      - name: xcodebuild (${{ matrix.configuration }}, iphoneos, unsigned)
         run: |
           set -o pipefail
           WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
@@ -64,7 +82,7 @@ jobs:
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
-            -configuration Debug \
+            -configuration ${{ matrix.configuration }} \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
@@ -74,20 +92,23 @@ jobs:
       - name: Package unsigned .ipa
         run: |
           rm -rf Payload && mkdir Payload
-          cp -R build/Build/Products/Debug-iphoneos/*.app Payload/
-          zip -qry LiveInterpreter.ipa Payload
-          ls -lh LiveInterpreter.ipa
+          cp -R build/Build/Products/${{ matrix.configuration }}-iphoneos/*.app Payload/
+          if [ "${{ matrix.configuration }}" = "Release" ]; then
+            ls Payload/*.app/main.jsbundle > /dev/null || { echo "Release build is missing main.jsbundle"; exit 1; }
+          fi
+          zip -qry ${{ matrix.ipa }} Payload
+          ls -lh ${{ matrix.ipa }}
 
       - uses: actions/upload-artifact@v7
         with:
-          name: LiveInterpreter-ipa
-          path: app/LiveInterpreter.ipa
+          name: ${{ matrix.artifact }}
+          path: app/${{ matrix.ipa }}
           retention-days: 14
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: xcodebuild-log
+          name: xcodebuild-log-${{ matrix.variant }}
           path: app/xcodebuild.log
           if-no-files-found: ignore
