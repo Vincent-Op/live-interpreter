@@ -9,6 +9,7 @@ export default function App() {
     <View style={styles.container}>
       <Text style={styles.title}>LiveInterpreter</Text>
       <Text style={styles.sub}>Phase 1: JS loaded from Metro ✅</Text>
+      <Text style={styles.sub}>Live update from the PC works 🎉</Text>
       <Pressable style={styles.button} onPress={() => setTaps((n) => n + 1)}>
         <Text style={styles.buttonText}>Tapped {taps} times</Text>
       </Pressable>
