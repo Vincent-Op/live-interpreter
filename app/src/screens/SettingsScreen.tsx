@@ -1,8 +1,11 @@
+import { Ionicons } from '@expo/vector-icons';
+import Slider from '@react-native-community/slider';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { TRANSCRIBE_USD_PER_MIN, TRANSLATE_USD_PER_MIN } from '../config';
 import { AppSettings } from '../settings';
-import { colors } from '../theme';
+import { colors, radius } from '../theme';
 
 type Props = {
   settings: AppSettings;
@@ -12,137 +15,216 @@ type Props = {
   onOpenAudioTest: () => void;
 };
 
+type IconName = keyof typeof Ionicons.glyphMap;
+
 export function SettingsScreen({ settings, running, onChange, onBack, onOpenAudioTest }: Props) {
+  const insets = useSafeAreaInsets();
   const [key, setKey] = useState(settings.apiKey);
   const [showKey, setShowKey] = useState(false);
   const set = (patch: Partial<AppSettings>) => onChange({ ...settings, ...patch });
+  const saveKey = () => {
+    if (key.trim() !== settings.apiKey) set({ apiKey: key.trim() });
+  };
+  const keyOk = /^sk-[A-Za-z0-9_-]{20,}$/.test(key.trim());
 
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable onPress={() => { if (key !== settings.apiKey) set({ apiKey: key.trim() }); onBack(); }} hitSlop={12}>
-          <Text style={styles.back}>‹ Done</Text>
+        <Pressable
+          onPress={() => {
+            saveKey();
+            onBack();
+          }}
+          hitSlop={12}
+          style={styles.back}
+        >
+          <Ionicons name="chevron-back" size={22} color={colors.link} />
+          <Text style={styles.backText}>Done</Text>
         </Pressable>
         <Text style={styles.title}>Settings</Text>
-        <View style={{ width: 60 }} />
+        <View style={{ width: 70 }} />
       </View>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.section}>OpenAI API key</Text>
-        <View style={styles.card}>
-          <TextInput
-            style={styles.input}
-            value={key}
-            onChangeText={setKey}
-            onEndEditing={() => set({ apiKey: key.trim() })}
-            placeholder="sk-…"
-            placeholderTextColor="#52525b"
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry={!showKey}
-          />
-          <View style={styles.rowBetween}>
-            <Text style={styles.note}>Stored in the iOS Keychain, on this phone only.</Text>
-            <Pressable onPress={() => setShowKey((v) => !v)} hitSlop={8}>
-              <Text style={styles.link}>{showKey ? 'Hide' : 'Show'}</Text>
-            </Pressable>
-          </View>
-        </View>
 
-        <Text style={styles.section}>Volume</Text>
-        <View style={styles.card}>
-          <Stepper label="THEM → AirPods (English)" value={settings.headphonesVolume} onChange={(v) => set({ headphonesVolume: v })} />
-          <Stepper label="ME → speaker (中文)" value={settings.speakerVolume} onChange={(v) => set({ speakerVolume: v })} />
-          <Text style={styles.note}>Also use the phone's volume buttons; this sets each side relative to that.</Text>
-        </View>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 40 }]} keyboardShouldPersistTaps="handled">
+        <Section title="OpenAI">
+          <Row icon="key-outline" tint="#F59E0B" title="API key" note="Stored in the iOS Keychain, on this phone only.">
+            <View style={styles.keyRow}>
+              <TextInput
+                style={styles.input}
+                value={key}
+                onChangeText={setKey}
+                onEndEditing={saveKey}
+                placeholder="sk-…"
+                placeholderTextColor={colors.faint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                secureTextEntry={!showKey}
+              />
+              <Pressable onPress={() => setShowKey((v) => !v)} hitSlop={8} style={styles.eye}>
+                <Ionicons name={showKey ? 'eye-off-outline' : 'eye-outline'} size={20} color={colors.muted} />
+              </Pressable>
+            </View>
+            {!!key && !keyOk && <Text style={[styles.note, { color: colors.warn }]}>That doesn't look like an OpenAI key (sk-…).</Text>}
+          </Row>
+        </Section>
 
-        <Text style={styles.section}>Options</Text>
-        <View style={styles.card}>
-          <Toggle
-            label="Listen only"
-            note="Never use the speaker. Your English is still translated to text on screen."
+        <Section title="Volume">
+          <VolumeRow icon="headset-outline" tint={colors.them} title="THEM → AirPods" value={settings.headphonesVolume} onChange={(v) => set({ headphonesVolume: v })} />
+          <Divider />
+          <VolumeRow icon="volume-high-outline" tint={colors.me} title="ME → speaker" value={settings.speakerVolume} onChange={(v) => set({ speakerVolume: v })} />
+          <Text style={[styles.note, styles.pad]}>Relative to the phone's volume buttons.</Text>
+        </Section>
+
+        <Section title="Conversation">
+          <ToggleRow
+            icon="ear-outline"
+            tint="#22C55E"
+            title="Listen only"
+            note="Never use the speaker. Your English is still translated to text."
             value={settings.listenOnly}
             onChange={(v) => set({ listenOnly: v })}
           />
-          <Toggle
-            label="Show original text"
-            note={`Also show what was said (中文 / English). Adds $${TRANSCRIBE_USD_PER_MIN}/min while talking.`}
+          <Divider />
+          <ToggleRow
+            icon="headset"
+            tint="#38BDF8"
+            title="AirPods press"
+            note="Press the AirPods stem once for THEM, twice for ME. Works only if iOS sends the press to this app."
+            value={settings.airpodsPress}
+            onChange={(v) => set({ airpodsPress: v })}
+          />
+          <Divider />
+          <ToggleRow
+            icon="document-text-outline"
+            tint="#A78BFA"
+            title="Show original text"
+            note={`Also show what was said. Adds $${TRANSCRIBE_USD_PER_MIN}/min while talking.`}
             value={settings.showOriginal}
             onChange={(v) => set({ showOriginal: v })}
           />
-          <Toggle
-            label="Noise reduction"
-            note="Filters background noise (street, restaurant) for the phone's mic."
+          <Divider />
+          <ToggleRow
+            icon="pulse-outline"
+            tint="#F472B6"
+            title="Noise reduction"
+            note="Filters street and restaurant noise for the phone's mic."
             value={settings.noiseReduction}
             onChange={(v) => set({ noiseReduction: v })}
           />
-          {running && <Text style={[styles.note, { color: colors.warn }]}>Original text and noise reduction apply the next time you press Start.</Text>}
-        </View>
+          {running && <Text style={[styles.note, styles.pad, { color: colors.warn }]}>Original text and noise reduction apply after the next Start.</Text>}
+        </Section>
 
-        <Text style={styles.section}>Cost</Text>
-        <View style={styles.card}>
-          <Text style={styles.text}>Estimated total so far: ${settings.totalSpentUsd.toFixed(2)}</Text>
-          <Text style={styles.note}>
-            You pay only while a button is on: ${TRANSLATE_USD_PER_MIN}/min of talking
-            {settings.showOriginal ? ` + $${TRANSCRIBE_USD_PER_MIN}/min for original text` : ''}. Waiting costs nothing. Check exact
-            charges at platform.openai.com/usage.
-          </Text>
-          <Pressable onPress={() => set({ totalSpentUsd: 0 })} hitSlop={8}>
-            <Text style={styles.link}>Reset total</Text>
+        <Section title="Cost">
+          <Row icon="wallet-outline" tint="#22C55E" title={`Estimated total: $${settings.totalSpentUsd.toFixed(2)}`}>
+            <Text style={styles.note}>
+              You pay only while THEM or ME is on: ${TRANSLATE_USD_PER_MIN}/min
+              {settings.showOriginal ? ` + $${TRANSCRIBE_USD_PER_MIN}/min for original text` : ''}. Waiting costs nothing. Exact charges:
+              platform.openai.com/usage
+            </Text>
+            <Pressable onPress={() => set({ totalSpentUsd: 0 })} hitSlop={8}>
+              <Text style={styles.link}>Reset total</Text>
+            </Pressable>
+          </Row>
+        </Section>
+
+        <Section title="Troubleshooting">
+          <Pressable onPress={onOpenAudioTest}>
+            <Row icon="flask-outline" tint="#94A3B8" title="Audio test" note="Tones to AirPods and speaker, mic meter. Stops the interpreter." chevron />
           </Pressable>
-        </View>
-
-        <Text style={styles.section}>Troubleshooting</Text>
-        <Pressable style={styles.card} onPress={onOpenAudioTest}>
-          <Text style={styles.text}>Audio test screen ›</Text>
-          <Text style={styles.note}>Tones to AirPods / speaker and a mic meter. Stops the interpreter.</Text>
-        </Pressable>
+        </Section>
       </ScrollView>
     </View>
   );
 }
 
-function Stepper({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
-  const pct = Math.round(value * 100);
-  const step = (d: number) => onChange(Math.max(0, Math.min(1, Math.round((value + d) * 10) / 10)));
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <View style={styles.rowBetween}>
-      <Text style={[styles.text, { flex: 1 }]}>{label}</Text>
-      <Pressable style={styles.stepBtn} onPress={() => step(-0.1)}>
-        <Text style={styles.stepText}>−</Text>
-      </Pressable>
-      <Text style={[styles.text, { width: 52, textAlign: 'center' }]}>{pct}%</Text>
-      <Pressable style={styles.stepBtn} onPress={() => step(0.1)}>
-        <Text style={styles.stepText}>+</Text>
-      </Pressable>
+    <View style={{ gap: 8 }}>
+      <Text style={styles.section}>{title}</Text>
+      <View style={styles.card}>{children}</View>
     </View>
   );
 }
 
-function Toggle({ label, note, value, onChange }: { label: string; note: string; value: boolean; onChange: (v: boolean) => void }) {
+function Row({
+  icon,
+  tint,
+  title,
+  note,
+  chevron,
+  right,
+  children,
+}: {
+  icon: IconName;
+  tint: string;
+  title: string;
+  note?: string;
+  chevron?: boolean;
+  right?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
   return (
-    <View style={{ gap: 2 }}>
-      <View style={styles.rowBetween}>
-        <Text style={styles.text}>{label}</Text>
-        <Switch value={value} onValueChange={onChange} />
+    <View style={styles.row}>
+      <View style={styles.rowTop}>
+        <View style={[styles.rowIcon, { backgroundColor: tint }]}>
+          <Ionicons name={icon} size={16} color="#fff" />
+        </View>
+        <Text style={styles.rowTitle}>{title}</Text>
+        {right}
+        {chevron && <Ionicons name="chevron-forward" size={18} color={colors.faint} />}
       </View>
-      <Text style={styles.note}>{note}</Text>
+      {!!note && <Text style={[styles.note, styles.indent]}>{note}</Text>}
+      {children && <View style={[styles.indent, { gap: 8 }]}>{children}</View>}
     </View>
   );
+}
+
+function ToggleRow(p: { icon: IconName; tint: string; title: string; note: string; value: boolean; onChange: (v: boolean) => void }) {
+  return <Row icon={p.icon} tint={p.tint} title={p.title} note={p.note} right={<Switch value={p.value} onValueChange={p.onChange} />} />;
+}
+
+function VolumeRow({ icon, tint, title, value, onChange }: { icon: IconName; tint: string; title: string; value: number; onChange: (v: number) => void }) {
+  const [v, setV] = useState(value);
+  return (
+    <Row icon={icon} tint={tint} title={title} right={<Text style={styles.value}>{Math.round(v * 100)}%</Text>}>
+      <Slider
+        value={value}
+        minimumValue={0}
+        maximumValue={1}
+        step={0.05}
+        minimumTrackTintColor={tint}
+        maximumTrackTintColor={colors.border}
+        onValueChange={setV}
+        onSlidingComplete={onChange}
+      />
+    </Row>
+  );
+}
+
+function Divider() {
+  return <View style={styles.divider} />;
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg, paddingTop: 54 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingBottom: 8 },
-  back: { color: '#60a5fa', fontSize: 17, width: 60 },
-  title: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  content: { padding: 16, gap: 8, paddingBottom: 60 },
-  section: { color: '#93c5fd', fontSize: 13, fontWeight: '700', marginTop: 12, textTransform: 'uppercase' },
-  card: { backgroundColor: colors.card, borderRadius: 12, padding: 14, gap: 12 },
-  input: { color: colors.text, fontSize: 16, backgroundColor: '#0f0f14', borderRadius: 8, padding: 12, fontFamily: 'Menlo' },
-  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
-  text: { color: colors.text, fontSize: 16 },
-  note: { color: colors.dim, fontSize: 12, lineHeight: 17, flexShrink: 1 },
-  link: { color: '#60a5fa', fontSize: 15 },
-  stepBtn: { width: 40, height: 36, borderRadius: 8, backgroundColor: '#2a2a33', alignItems: 'center', justifyContent: 'center' },
-  stepText: { color: colors.text, fontSize: 22, fontWeight: '600' },
+  screen: { flex: 1, backgroundColor: colors.bg },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 10 },
+  back: { flexDirection: 'row', alignItems: 'center', width: 70 },
+  backText: { color: colors.link, fontSize: 17 },
+  title: { color: colors.text, fontSize: 17, fontWeight: '700' },
+  content: { padding: 16, gap: 22 },
+  section: { color: colors.faint, fontSize: 12, fontWeight: '700', letterSpacing: 0.8, textTransform: 'uppercase', marginLeft: 4 },
+  card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, paddingVertical: 4 },
+  row: { paddingHorizontal: 14, paddingVertical: 12, gap: 6 },
+  rowTop: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  rowIcon: { width: 28, height: 28, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  rowTitle: { flex: 1, color: colors.text, fontSize: 16 },
+  indent: { marginLeft: 40 },
+  pad: { paddingHorizontal: 14, paddingBottom: 10 },
+  note: { color: colors.muted, fontSize: 12.5, lineHeight: 18 },
+  value: { color: colors.muted, fontSize: 14, fontVariant: ['tabular-nums'] },
+  keyRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.bg, borderRadius: 10, borderWidth: 1, borderColor: colors.border },
+  input: { flex: 1, color: colors.text, fontSize: 15, padding: 12, fontFamily: 'Menlo' },
+  eye: { paddingHorizontal: 12 },
+  link: { color: colors.link, fontSize: 15 },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginLeft: 54 },
 });

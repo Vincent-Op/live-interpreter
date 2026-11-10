@@ -12,6 +12,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   listenOnly: false,
   showOriginal: false,
   noiseReduction: true,
+  airpodsPress: true,
   totalSpentUsd: 0,
 };
 

@@ -1,8 +1,10 @@
 import AVFoundation
+import MediaPlayer
+import UIKit
 
 /// One AVAudioSession + one AVAudioEngine:
 ///
-///   built-in mic -> tap -> resample to 24 kHz PCM16 -> "onAudioChunk" every 200 ms
+///   built-in mic -> tap -> resample to 24 kHz PCM16 -> "onAudioChunk" every 200 ms (while streaming)
 ///
 ///   headphones player --\
 ///                        >-- main mixer -> current output route
@@ -12,8 +14,8 @@ import AVFoundation
 /// speaker we override the route to the built-in speaker, play, then remove the override
 /// (the route goes back to the AirPods). Headphone audio that arrives while the speaker is
 /// active is held and plays afterwards, so the English translation never comes out loud.
-/// The mic is muted while the speaker plays (plus a short tail) so we never translate
-/// our own output.
+/// The mic is muted while speaker audio is actually playing (plus a short tail) so we never
+/// translate our own output.
 ///
 /// All state lives on the serial queue `q`.
 final class AudioEngine {
@@ -23,30 +25,29 @@ final class AudioEngine {
     case off, switchingOn, on, switchingOff
   }
 
-  // Tunable from JS via configure(). Hold: keep the speaker route this long after its queue
-  // empties (avoids flipping routes during short pauses). Tail: keep the mic muted this long
-  // after the speaker route ends.
-  private var speakerHoldMs = 1200
-  private var micTailMs = 300
+  // Tunable from JS via configure().
+  private var speakerHoldMs = 600 // keep the speaker route this long after its audio ends (when not held)
+  private var micTailMs = 300 // keep the mic muted this long after speaker audio ends
   static let routeSettleMs = 350 // fallback wait if no route-change notification arrives
   private static let chunkBytes = 9600 // 200 ms of 24 kHz PCM16 mono
+  private static let prerollChunks = 2 // replayed when streaming starts, so the first word isn't lost
 
   private let q = DispatchQueue(label: "liveinterpreter.audio")
   private let session = AVAudioSession.sharedInstance()
-  private let engine = AVAudioEngine()
-  private let players: [OutputTarget: AVAudioPlayerNode] = [
-    .headphones: AVAudioPlayerNode(),
-    .speaker: AVAudioPlayerNode(),
-  ]
+  private var engine = AVAudioEngine()
+  private var players: [OutputTarget: AVAudioPlayerNode] = [.headphones: AVAudioPlayerNode(), .speaker: AVAudioPlayerNode()]
   private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 24000, channels: 1, interleaved: false)!
   private let sendFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24000, channels: 1, interleaved: true)!
 
   private var sessionActive = false
   private var graphBuilt = false
   private var capturing = false
+  private var streaming = true // the test screen expects chunks; the interpreter turns this off
   private var tapInstalled = false
   private var converter: AVAudioConverter?
   private var outgoing = Data()
+  private var preroll: [Data] = []
+  private var lastLevelAt: CFAbsoluteTime = 0
 
   // `scheduled`: handed to a player, not played back yet. `waiting`: held until the route is right.
   private var scheduled: [OutputTarget: [AVAudioPCMBuffer]] = [.headphones: [], .speaker: []]
@@ -55,21 +56,35 @@ final class AudioEngine {
   // Bumped whenever a player is reset, so its stale completion callbacks are ignored.
   private var generation: [OutputTarget: Int] = [.headphones: 0, .speaker: 0]
   private var speakerMode = SpeakerMode.off
+  private var speakerHeld = false // JS asked to keep the speaker route (a whole ME turn)
   private var switchToken = 0
   private var releaseToken = 0
   private var micGateUntil: CFAbsoluteTime = 0
+  private var headphonesConnected = false
   private var observers: [NSObjectProtocol] = []
+  private var engineObserver: NSObjectProtocol?
+  private var remoteTargets: [(MPRemoteCommand, Any)] = []
+  private var lastRemoteAt: CFAbsoluteTime = 0
+  private var lastRouteChangeAt: CFAbsoluteTime = 0
+  private var lastTapAt: CFAbsoluteTime = 0
 
   init() {
     let nc = NotificationCenter.default
     observers.append(nc.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil) { [weak self] note in
       let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt ?? 0
-      self?.q.async { self?.handleRouteChange(AVAudioSession.RouteChangeReason(rawValue: raw)) }
+      let previous = note.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+      self?.q.async { self?.handleRouteChange(AVAudioSession.RouteChangeReason(rawValue: raw), previous: previous) }
     })
-    // Fires when the hardware format changes (e.g. AirPods <-> speaker). The engine has stopped itself.
-    observers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
-      self?.q.async { self?.restartEngine(reason: "configuration change") }
+    observers.append(nc.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
+      let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt ?? 0
+      let opts = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+      self?.q.async { self?.handleInterruption(AVAudioSession.InterruptionType(rawValue: raw), options: opts) }
     })
+    observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: nil) { [weak self] _ in
+      self?.q.async { self?.handleMediaServicesReset() }
+    })
+    observeEngine()
+    headphonesConnected = AudioEngine.hasHeadphones(session.currentRoute)
   }
 
   // MARK: - Public API (called from the module, never on `q`)
@@ -88,6 +103,7 @@ final class AudioEngine {
       try activateSession()
       capturing = true
       outgoing = Data()
+      preroll = []
       // The input tap is added while the engine is stopped, so do a full restart.
       try restartEngineOrThrow()
     }
@@ -96,17 +112,20 @@ final class AudioEngine {
   func stopAll() {
     q.sync {
       capturing = false
+      streaming = true
       if tapInstalled {
         engine.inputNode.removeTap(onBus: 0)
         tapInstalled = false
       }
       for t in [OutputTarget.headphones, .speaker] { resetPlayer(t) }
+      speakerHeld = false
       if speakerMode != .off {
         try? session.overrideOutputAudioPort(.none)
         speakerMode = .off
       }
       engine.stop()
       outgoing = Data()
+      preroll = []
       if sessionActive {
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
         sessionActive = false
@@ -117,8 +136,23 @@ final class AudioEngine {
 
   func shutdown() {
     stopAll()
+    setRemoteCommands(false)
     observers.forEach { NotificationCenter.default.removeObserver($0) }
     observers.removeAll()
+    if let o = engineObserver { NotificationCenter.default.removeObserver(o) }
+  }
+
+  /// While off, mic audio stays native (no JS events = less battery). Turning it on first
+  /// replays the last ~400 ms, in case they started speaking just before the tap.
+  func setStreaming(_ on: Bool) {
+    q.sync {
+      if on && !streaming {
+        let gated = isMicGated()
+        if !gated { preroll.forEach { emitChunk($0) } }
+        preroll = []
+      }
+      streaming = on
+    }
   }
 
   func play(base64: String, target: OutputTarget) throws {
@@ -152,12 +186,28 @@ final class AudioEngine {
     }
   }
 
+  /// on: switch to the speaker now and keep it until released. off: release once speaker audio ends.
+  func holdSpeaker(_ on: Bool) throws {
+    try q.sync {
+      speakerHeld = on
+      if on {
+        if !engine.isRunning { try restartEngineOrThrow() }
+        releaseToken += 1
+        if speakerMode == .off { beginSpeaker() }
+      } else if speakerMode == .on, (scheduled[.speaker] ?? []).isEmpty, (waiting[.speaker] ?? []).isEmpty {
+        releaseSpeaker()
+      }
+      // Otherwise: released by bufferFinished -> scheduleSpeakerRelease, or by routeSettled.
+    }
+  }
+
   func stopPlayback(target: OutputTarget?) {
     q.sync {
       let targets = target.map { [$0] } ?? [.headphones, .speaker]
       for t in targets { resetPlayer(t) }
-      if targets.contains(.speaker), speakerMode == .on || speakerMode == .switchingOn {
-        releaseSpeaker()
+      if targets.contains(.speaker) {
+        speakerHeld = false
+        if speakerMode == .on || speakerMode == .switchingOn { releaseSpeaker() }
       }
       emitPlayback()
     }
@@ -178,6 +228,46 @@ final class AudioEngine {
     q.sync { routeInfo() }
   }
 
+  /// AirPods stem press / lock-screen play-pause -> "onRemoteCommand". Experimental: iOS only
+  /// sends these to the app it considers "now playing".
+  func setRemoteCommands(_ on: Bool) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self else { return }
+      let center = MPRemoteCommandCenter.shared()
+      for (command, target) in self.remoteTargets { command.removeTarget(target) }
+      self.remoteTargets.removeAll()
+      guard on else {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        UIApplication.shared.endReceivingRemoteControlEvents()
+        return
+      }
+      UIApplication.shared.beginReceivingRemoteControlEvents()
+      // Single press arrives as play, pause or toggle (depending on what iOS thinks the state is);
+      // a double press arrives as next track.
+      let commands: [(MPRemoteCommand, String)] = [
+        (center.togglePlayPauseCommand, "single"),
+        (center.playCommand, "single"),
+        (center.pauseCommand, "single"),
+        (center.nextTrackCommand, "double"),
+      ]
+      for (command, name) in commands {
+        command.isEnabled = true
+        let target = command.addTarget { [weak self] _ in
+          self?.q.async { self?.remoteCommand(name) }
+          return .success
+        }
+        self.remoteTargets.append((command, target))
+      }
+      MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+        MPMediaItemPropertyTitle: "LiveInterpreter",
+        MPMediaItemPropertyArtist: "Press to translate THEM",
+        MPNowPlayingInfoPropertyPlaybackRate: 1.0,
+        MPNowPlayingInfoPropertyIsLiveStream: true,
+      ]
+      MPNowPlayingInfoCenter.default().playbackState = .playing
+    }
+  }
+
   // MARK: - Session and engine
 
   private func activateSession() throws {
@@ -185,6 +275,9 @@ final class AudioEngine {
     // .allowBluetoothA2DP (not .allowBluetooth/HFP): high-quality output to the AirPods.
     // A2DP is output-only, so the input stays on the iPhone's built-in mic, which hears both people.
     try session.setCategory(.playAndRecord, mode: .default, options: [.allowBluetoothA2DP])
+    try? session.setPreferredIOBufferDuration(0.02) // fewer wake-ups than the default; still low latency
+    try? session.setPrefersNoInterruptionsFromSystemAlerts(true) // incoming calls show as a banner instead
+    try? session.setAllowHapticsAndSystemSoundsDuringRecording(true) // iOS mutes haptics while recording otherwise
     try session.setActive(true)
     sessionActive = true
     preferBuiltInMic()
@@ -194,6 +287,14 @@ final class AudioEngine {
     guard let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) else { return }
     if session.preferredInput?.portType != .builtInMic {
       try? session.setPreferredInput(mic)
+    }
+  }
+
+  private func observeEngine() {
+    if let o = engineObserver { NotificationCenter.default.removeObserver(o) }
+    // Fires when the hardware format changes (e.g. AirPods <-> speaker). The engine has stopped itself.
+    engineObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+      self?.q.async { self?.restartEngine(reason: "configuration change") }
     }
   }
 
@@ -241,6 +342,83 @@ final class AudioEngine {
     if speakerMode == .off { players[.headphones]!.play() } else { players[.headphones]!.pause() }
   }
 
+  // MARK: - Interruptions and resets
+
+  private func handleInterruption(_ type: AVAudioSession.InterruptionType?, options: UInt) {
+    guard sessionActive || capturing else { return }
+    switch type {
+    case .began:
+      // The system has already stopped our audio. Drop queued playback so stale audio doesn't
+      // play after the call, and forget any speaker override.
+      for t in [OutputTarget.headphones, .speaker] { resetPlayer(t) }
+      speakerHeld = false
+      speakerMode = .off
+      sessionActive = false
+      emitPlayback()
+      emit?("onInterruption", ["state": "began", "resumed": false])
+    case .ended:
+      // Try to resume even without .shouldResume; it fails harmlessly if iOS doesn't allow it.
+      var resumed = false
+      do {
+        try session.setActive(true)
+        sessionActive = true
+        try restartEngineOrThrow()
+        resumed = true
+        armTapWatchdog()
+      } catch {
+        sessionActive = false // e.g. not allowed while in the background: JS retries via resume()
+      }
+      emit?("onInterruption", ["state": "ended", "resumed": resumed])
+    default:
+      break
+    }
+  }
+
+  /// Re-activate after an interruption that couldn't resume (call from the foreground).
+  func resume() throws {
+    try q.sync {
+      guard capturing || sessionActive else { return }
+      try session.setActive(true)
+      sessionActive = true
+      try restartEngineOrThrow()
+      armTapWatchdog()
+    }
+  }
+
+  /// After a call the tap sometimes stays silent although the engine restarted (reported on
+  /// recent iPhones); if no mic audio arrives within a second, rebuild the engine from scratch.
+  private func armTapWatchdog() {
+    guard capturing else { return }
+    let armedAt = CFAbsoluteTimeGetCurrent()
+    q.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+      guard let self = self, self.capturing, self.lastTapAt < armedAt else { return }
+      self.handleMediaServicesReset()
+    }
+  }
+
+  /// Rare: the system audio daemon restarted. Every audio object is invalid; rebuild them all.
+  private func handleMediaServicesReset() {
+    engine = AVAudioEngine()
+    players = [.headphones: AVAudioPlayerNode(), .speaker: AVAudioPlayerNode()]
+    graphBuilt = false
+    tapInstalled = false
+    sessionActive = false
+    speakerMode = .off
+    speakerHeld = false
+    scheduled = [.headphones: [], .speaker: []]
+    waiting = [.headphones: [], .speaker: []]
+    playing = [.headphones: false, .speaker: false]
+    observeEngine()
+    if capturing {
+      do {
+        try restartEngineOrThrow()
+      } catch {
+        emitError("Audio system reset and could not restart: \(error.localizedDescription)")
+      }
+    }
+    emitPlayback()
+  }
+
   // MARK: - Mic capture
 
   private func installTap() {
@@ -280,20 +458,40 @@ final class AudioEngine {
     q.async { [weak self] in self?.micData(bytes, db: db) }
   }
 
+  private func isMicGated() -> Bool {
+    // Only while speaker audio is actually playing (or queued to), not while the route is merely held.
+    return (playing[.speaker] ?? false) || CFAbsoluteTimeGetCurrent() < micGateUntil
+  }
+
   private func micData(_ bytes: Data, db: Float) {
     guard capturing else { return }
-    let gated = speakerMode != .off || CFAbsoluteTimeGetCurrent() < micGateUntil
-    emit?("onMicLevel", ["db": Double(db), "gated": gated])
+    let gated = isMicGated()
+    let now = CFAbsoluteTimeGetCurrent()
+    lastTapAt = now
+    if now - lastLevelAt >= 0.12 { // ~8 level updates per second is plenty for a meter
+      lastLevelAt = now
+      emit?("onMicLevel", ["db": Double(db), "gated": gated])
+    }
     if gated {
       outgoing = Data()
+      preroll = []
       return
     }
     outgoing.append(bytes)
     while outgoing.count >= AudioEngine.chunkBytes {
       let chunk = Data(outgoing.prefix(AudioEngine.chunkBytes))
       outgoing = Data(outgoing.dropFirst(AudioEngine.chunkBytes))
-      emit?("onAudioChunk", ["data": chunk.base64EncodedString(), "durationMs": 200])
+      if streaming {
+        emitChunk(chunk)
+      } else {
+        preroll.append(chunk)
+        if preroll.count > AudioEngine.prerollChunks { preroll.removeFirst() }
+      }
     }
+  }
+
+  private func emitChunk(_ chunk: Data) {
+    emit?("onAudioChunk", ["data": chunk.base64EncodedString(), "durationMs": 200])
   }
 
   private static func levelDb(_ b: AVAudioPCMBuffer) -> Float {
@@ -339,7 +537,10 @@ final class AudioEngine {
     }
     if (scheduled[t] ?? []).isEmpty && (waiting[t] ?? []).isEmpty {
       setPlaying(t, false)
-      if t == .speaker { scheduleSpeakerRelease() }
+      if t == .speaker {
+        micGateUntil = CFAbsoluteTimeGetCurrent() + Double(micTailMs) / 1000
+        scheduleSpeakerRelease()
+      }
     }
   }
 
@@ -366,10 +567,11 @@ final class AudioEngine {
   }
 
   private func scheduleSpeakerRelease() {
+    if speakerHeld { return }
     releaseToken += 1
     let token = releaseToken
     q.asyncAfter(deadline: .now() + .milliseconds(self.speakerHoldMs)) { [weak self] in
-      guard let self = self, token == self.releaseToken, self.speakerMode == .on,
+      guard let self = self, token == self.releaseToken, !self.speakerHeld, self.speakerMode == .on,
             (self.scheduled[.speaker] ?? []).isEmpty, (self.waiting[.speaker] ?? []).isEmpty else { return }
       self.releaseSpeaker()
     }
@@ -396,9 +598,19 @@ final class AudioEngine {
     }
   }
 
-  private func handleRouteChange(_ reason: AVAudioSession.RouteChangeReason?) {
+  private func handleRouteChange(_ reason: AVAudioSession.RouteChangeReason?, previous: AVAudioSessionRouteDescription?) {
+    if reason == .newDeviceAvailable || reason == .oldDeviceUnavailable { lastRouteChangeAt = CFAbsoluteTimeGetCurrent() }
     if reason == .newDeviceAvailable || reason == .oldDeviceUnavailable {
       preferBuiltInMic() // AirPods connected/removed: stay on the iPhone mic
+    }
+    if speakerMode == .off {
+      let now = AudioEngine.hasHeadphones(session.currentRoute)
+      if reason == .oldDeviceUnavailable, let previous = previous, AudioEngine.hasHeadphones(previous), !now {
+        // AirPods removed: drop queued English so it doesn't come out of the phone.
+        resetPlayer(.headphones)
+        emitPlayback()
+      }
+      headphonesConnected = now
     }
     emit?("onRouteChange", ["reason": AudioEngine.name(reason), "route": routeInfo()])
     if speakerMode == .switchingOn || speakerMode == .switchingOff {
@@ -420,9 +632,9 @@ final class AudioEngine {
       if pending.isEmpty && (scheduled[.speaker] ?? []).isEmpty { scheduleSpeakerRelease() }
     case .switchingOff:
       speakerMode = .off
-      micGateUntil = CFAbsoluteTimeGetCurrent() + Double(micTailMs) / 1000
-      if !(waiting[.speaker] ?? []).isEmpty {
-        beginSpeaker() // more speaker audio arrived while switching back
+      headphonesConnected = AudioEngine.hasHeadphones(session.currentRoute)
+      if !(waiting[.speaker] ?? []).isEmpty || speakerHeld {
+        beginSpeaker() // more speaker audio (or a new hold) arrived while switching back
         return
       }
       let pending = waiting[.headphones] ?? []
@@ -433,6 +645,14 @@ final class AudioEngine {
       break
     }
     emitPlayback()
+  }
+
+  private func remoteCommand(_ name: String) {
+    let now = CFAbsoluteTimeGetCurrent()
+    if now - lastRemoteAt < 0.5 { return } // one press can arrive as pause+play
+    if now - lastRouteChangeAt < 1.0 { return } // taking an AirPod out sends "pause"; ignore it
+    lastRemoteAt = now
+    emit?("onRemoteCommand", ["command": name])
   }
 
   // MARK: - Events
@@ -463,7 +683,13 @@ final class AudioEngine {
       "inputs": route.inputs.map(port),
       "speakerMode": speakerMode.rawValue,
       "sampleRate": session.sampleRate,
+      "headphones": speakerMode == .off ? AudioEngine.hasHeadphones(route) : headphonesConnected,
     ]
+  }
+
+  private static func hasHeadphones(_ route: AVAudioSessionRouteDescription) -> Bool {
+    let types: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .headphones, .usbAudio]
+    return route.outputs.contains { types.contains($0.portType) }
   }
 
   private static func name(_ reason: AVAudioSession.RouteChangeReason?) -> String {

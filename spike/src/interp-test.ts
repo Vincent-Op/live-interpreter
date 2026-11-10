@@ -36,10 +36,23 @@ function wav(pcm: Buffer): Buffer {
 class FakeAudio implements AudioPort {
   chunkListeners = new Set<(e: { data: string; durationMs: number }) => void>();
   played: Record<OutputTarget, { t: number; pcm: Buffer }[]> = { headphones: [], speaker: [] };
+  streaming = false;
+  preroll: string[] = [];
+  speakerLog: string[] = [];
   async requestPermission() { return true; }
   async start() {}
   async stop() {}
+  async resume() {}
   async setVolume() {}
+  async setRemoteCommands() {}
+  async setStreaming(on: boolean) {
+    if (on && !this.streaming) this.preroll.forEach((b) => this.chunkListeners.forEach((l) => l({ data: b, durationMs: 200 })));
+    this.preroll = [];
+    this.streaming = on;
+  }
+  async holdSpeaker(on: boolean) {
+    this.speakerLog.push(`[${now()} ms] holdSpeaker(${on})`);
+  }
   async playAudio(b64: string, target: OutputTarget) {
     this.played[target].push({ t: now(), pcm: Buffer.from(b64, "base64") });
   }
@@ -49,6 +62,11 @@ class FakeAudio implements AudioPort {
   }
   mic(pcm: Buffer) {
     const b64 = pcm.toString("base64");
+    if (!this.streaming) {
+      this.preroll.push(b64);
+      if (this.preroll.length > 2) this.preroll.shift();
+      return;
+    }
     this.chunkListeners.forEach((l) => l({ data: b64, durationMs: 200 }));
   }
 }
@@ -59,7 +77,7 @@ async function main() {
   const interp = new Interpreter(
     audio,
     (url, key) => new WebSocket(url, { headers: { Authorization: `Bearer ${key}` } }) as unknown as SocketLike,
-    { apiKey: KEY, headphonesVolume: 1, speakerVolume: 1, listenOnly: false, showOriginal: true, noiseReduction: true },
+    { apiKey: KEY, headphonesVolume: 1, speakerVolume: 1, listenOnly: false, showOriginal: true, noiseReduction: true, airpodsPress: false },
   );
   let lastErr: string | null = null;
   let lastSess = "";
@@ -117,7 +135,12 @@ async function main() {
       tap++;
     }
   }
+  await sleep(3000); // let the ME speaker hold release
   await interp.stop();
+  console.log("\nSpeaker hold calls:\n  " + audio.speakerLog.join("\n  "));
+  const meStop = taps[3][0];
+  const sp = audio.played.speaker;
+  if (sp.length) console.log(`  speaker audio played from ${sp[0].t - meStop} ms to ${sp.at(-1)!.t - meStop} ms after tapping ME stop (should all be >= 0)`);
 
   console.log("\nTranscript:");
   for (const e of interp.state.entries) {

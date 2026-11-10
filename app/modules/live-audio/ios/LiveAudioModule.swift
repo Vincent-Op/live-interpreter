@@ -22,7 +22,7 @@ public final class LiveAudioModule: Module {
   public func definition() -> ModuleDefinition {
     Name("LiveAudio")
 
-    Events("onAudioChunk", "onMicLevel", "onPlaybackState", "onRouteChange", "onError")
+    Events("onAudioChunk", "onMicLevel", "onPlaybackState", "onRouteChange", "onInterruption", "onRemoteCommand", "onError")
 
     OnDestroy {
       self.audio.shutdown()
@@ -37,6 +37,16 @@ public final class LiveAudioModule: Module {
       try self.audio.startCapture()
     }
 
+    // Mic chunks only go to JS while streaming; turning it on replays the last ~400 ms first.
+    AsyncFunction("setStreaming") { (on: Bool) in
+      self.audio.setStreaming(on)
+    }
+
+    // Re-activate audio after an interruption that couldn't resume in the background.
+    AsyncFunction("resume") {
+      try self.audio.resume()
+    }
+
     // Stops the mic and all playback, and releases the audio session.
     AsyncFunction("stop") {
       self.audio.stopAll()
@@ -45,6 +55,15 @@ public final class LiveAudioModule: Module {
     // base64 PCM16, 24 kHz mono, little-endian.
     AsyncFunction("playAudio") { (base64: String, target: OutputTarget) in
       try self.audio.play(base64: base64, target: target)
+    }
+
+    // true: switch to the speaker now and keep it. false: back to the AirPods once speaker audio ends.
+    AsyncFunction("holdSpeaker") { (on: Bool) in
+      try self.audio.holdSpeaker(on)
+    }
+
+    AsyncFunction("setRemoteCommands") { (on: Bool) in
+      self.audio.setRemoteCommands(on)
     }
 
     AsyncFunction("stopPlayback") { (target: OutputTarget?) in

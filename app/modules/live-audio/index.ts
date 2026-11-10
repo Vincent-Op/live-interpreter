@@ -3,7 +3,14 @@ import { NativeModule, requireOptionalNativeModule } from 'expo';
 export type OutputTarget = 'headphones' | 'speaker';
 export type RoutePort = { type: string; name: string };
 export type SpeakerMode = 'off' | 'switchingOn' | 'on' | 'switchingOff';
-export type AudioRoute = { inputs: RoutePort[]; outputs: RoutePort[]; speakerMode: SpeakerMode; sampleRate: number };
+export type AudioRoute = {
+  inputs: RoutePort[];
+  outputs: RoutePort[];
+  speakerMode: SpeakerMode;
+  sampleRate: number;
+  /** AirPods/headphones connected (stays true while the speaker override is active). */
+  headphones: boolean;
+};
 export type PlaybackState = { headphones: boolean; speaker: boolean; speakerMode: SpeakerMode };
 
 export type LiveAudioEvents = {
@@ -13,6 +20,10 @@ export type LiveAudioEvents = {
   onMicLevel: (e: { db: number; gated: boolean }) => void;
   onPlaybackState: (e: PlaybackState) => void;
   onRouteChange: (e: { reason: string; route: AudioRoute }) => void;
+  /** A call, Siri, alarm... `resumed` false = call resume() from the foreground. */
+  onInterruption: (e: { state: 'began' | 'ended'; resumed: boolean }) => void;
+  /** AirPods stem press or lock-screen play/pause: "single" or "double". */
+  onRemoteCommand: (e: { command: string }) => void;
   onError: (e: { message: string }) => void;
 };
 
@@ -20,7 +31,11 @@ declare class LiveAudioNativeModule extends NativeModule<LiveAudioEvents> {
   requestPermission(): Promise<boolean>;
   start(): Promise<void>;
   stop(): Promise<void>;
+  setStreaming(on: boolean): Promise<void>;
+  resume(): Promise<void>;
   playAudio(base64: string, target: OutputTarget): Promise<void>;
+  holdSpeaker(on: boolean): Promise<void>;
+  setRemoteCommands(on: boolean): Promise<void>;
   stopPlayback(target: OutputTarget | null): Promise<void>;
   setVolume(target: OutputTarget, volume: number): Promise<void>;
   configure(options: AudioConfig): Promise<void>;
@@ -48,7 +63,11 @@ export const LiveAudio = {
   requestPermission: () => mod().requestPermission(),
   start: () => mod().start(),
   stop: () => mod().stop(),
+  setStreaming: (on: boolean) => mod().setStreaming(on),
+  resume: () => mod().resume(),
   playAudio: (base64: string, target: OutputTarget) => mod().playAudio(base64, target),
+  holdSpeaker: (on: boolean) => mod().holdSpeaker(on),
+  setRemoteCommands: (on: boolean) => mod().setRemoteCommands(on),
   stopPlayback: (target?: OutputTarget) => mod().stopPlayback(target ?? null),
   setVolume: (target: OutputTarget, volume: number) => mod().setVolume(target, volume),
   configure: (options: AudioConfig) => mod().configure(options),
