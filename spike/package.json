@@ -6,6 +6,7 @@
     "samples": ".venv/Scripts/python make_samples.py",
     "probe": "tsx src/spike.ts --probe",
     "ptt": "tsx src/spike.ts --ptt --no-transcribe",
+    "interp": "tsx src/interp-test.ts",
     "spike": "tsx src/spike.ts",
     "typecheck": "tsc --noEmit"
   },

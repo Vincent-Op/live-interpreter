@@ -9,6 +9,9 @@ echo OPENAI_API_KEY=sk-... > .env       # gitignored
 npm run probe                           # which language codes are accepted
 npm run spike                           # zh clip, en clip, and a mixed 4-turn conversation (~$0.13)
 npm run spike -- --file my.m4a --lang zh   # your own recording
+npm run ptt                             # push-to-talk behaviour (~$0.035)
+npm run interp                          # the APP's interpreter code with a fake mic (~$0.02)
+npm run interp -- --drop                # same, with a simulated dropped connection
 ```
 
 Options: `--only mixed`, `--noise far_field|near_field|off`, `--no-transcribe`, `--tail 6` (s of trailing silence), `--gap 3`, `--dry` (no network).

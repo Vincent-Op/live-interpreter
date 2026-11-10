@@ -23,8 +23,11 @@ final class AudioEngine {
     case off, switchingOn, on, switchingOff
   }
 
-  static let speakerHoldMs = 500 // keep the speaker route this long after its queue empties
-  static let micTailMs = 300 // keep the mic muted this long after the speaker route ends
+  // Tunable from JS via configure(). Hold: keep the speaker route this long after its queue
+  // empties (avoids flipping routes during short pauses). Tail: keep the mic muted this long
+  // after the speaker route ends.
+  private var speakerHoldMs = 1200
+  private var micTailMs = 300
   static let routeSettleMs = 350 // fallback wait if no route-change notification arrives
   private static let chunkBytes = 9600 // 200 ms of 24 kHz PCM16 mono
 
@@ -157,6 +160,13 @@ final class AudioEngine {
         releaseSpeaker()
       }
       emitPlayback()
+    }
+  }
+
+  func configure(speakerHoldMs: Int?, micTailMs: Int?) {
+    q.sync {
+      if let v = speakerHoldMs { self.speakerHoldMs = max(0, v) }
+      if let v = micTailMs { self.micTailMs = max(0, v) }
     }
   }
 
@@ -358,7 +368,7 @@ final class AudioEngine {
   private func scheduleSpeakerRelease() {
     releaseToken += 1
     let token = releaseToken
-    q.asyncAfter(deadline: .now() + .milliseconds(AudioEngine.speakerHoldMs)) { [weak self] in
+    q.asyncAfter(deadline: .now() + .milliseconds(self.speakerHoldMs)) { [weak self] in
       guard let self = self, token == self.releaseToken, self.speakerMode == .on,
             (self.scheduled[.speaker] ?? []).isEmpty, (self.waiting[.speaker] ?? []).isEmpty else { return }
       self.releaseSpeaker()
@@ -410,7 +420,7 @@ final class AudioEngine {
       if pending.isEmpty && (scheduled[.speaker] ?? []).isEmpty { scheduleSpeakerRelease() }
     case .switchingOff:
       speakerMode = .off
-      micGateUntil = CFAbsoluteTimeGetCurrent() + Double(AudioEngine.micTailMs) / 1000
+      micGateUntil = CFAbsoluteTimeGetCurrent() + Double(micTailMs) / 1000
       if !(waiting[.speaker] ?? []).isEmpty {
         beginSpeaker() // more speaker audio arrived while switching back
         return

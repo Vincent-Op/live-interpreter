@@ -12,10 +12,15 @@
       "bundleIdentifier": "com.vincentop.liveinterpreter",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "LiveInterpreter listens to the conversation so it can translate it.",
-        "UIBackgroundModes": ["audio"],
+        "UIBackgroundModes": [
+          "audio"
+        ],
         "ITSAppUsesNonExemptEncryption": false
       }
     },
-    "plugins": ["expo-dev-client"]
+    "plugins": [
+      "expo-dev-client",
+      "expo-secure-store"
+    ]
   }
 }

@@ -23,8 +23,16 @@ declare class LiveAudioNativeModule extends NativeModule<LiveAudioEvents> {
   playAudio(base64: string, target: OutputTarget): Promise<void>;
   stopPlayback(target: OutputTarget | null): Promise<void>;
   setVolume(target: OutputTarget, volume: number): Promise<void>;
+  configure(options: AudioConfig): Promise<void>;
   getCurrentRoute(): AudioRoute;
 }
+
+export type AudioConfig = {
+  /** Keep the speaker route this long after its audio runs out (default 1200). */
+  speakerHoldMs?: number;
+  /** Keep the mic muted this long after the speaker route ends (default 300). */
+  micTailMs?: number;
+};
 
 // Optional so that new JS running on an older app build shows a message instead of crashing.
 const native = requireOptionalNativeModule<LiveAudioNativeModule>('LiveAudio');
@@ -43,6 +51,7 @@ export const LiveAudio = {
   playAudio: (base64: string, target: OutputTarget) => mod().playAudio(base64, target),
   stopPlayback: (target?: OutputTarget) => mod().stopPlayback(target ?? null),
   setVolume: (target: OutputTarget, volume: number) => mod().setVolume(target, volume),
+  configure: (options: AudioConfig) => mod().configure(options),
   getCurrentRoute: () => mod().getCurrentRoute(),
   addListener: <E extends keyof LiveAudioEvents>(event: E, listener: LiveAudioEvents[E]) =>
     mod().addListener(event, listener),

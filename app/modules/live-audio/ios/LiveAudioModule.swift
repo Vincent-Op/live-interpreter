@@ -5,6 +5,11 @@ enum OutputTarget: String, Enumerable {
   case speaker
 }
 
+struct AudioConfig: Record {
+  @Field var speakerHoldMs: Int?
+  @Field var micTailMs: Int?
+}
+
 // Thin bridge to JS. All audio logic lives in AudioEngine.swift.
 public final class LiveAudioModule: Module {
   private lazy var audio: AudioEngine = {
@@ -44,6 +49,10 @@ public final class LiveAudioModule: Module {
 
     AsyncFunction("stopPlayback") { (target: OutputTarget?) in
       self.audio.stopPlayback(target: target)
+    }
+
+    AsyncFunction("configure") { (options: AudioConfig) in
+      self.audio.configure(speakerHoldMs: options.speakerHoldMs, micTailMs: options.micTailMs)
     }
 
     AsyncFunction("setVolume") { (target: OutputTarget, volume: Double) in
