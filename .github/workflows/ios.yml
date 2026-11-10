@@ -1,0 +1,93 @@
+# Builds an UNSIGNED Debug dev-client .ipa on a macOS runner. Sideloadly signs it with your free Apple ID.
+# Debug builds don't embed the JS bundle: the app loads JS from Metro on your PC.
+name: iOS dev build
+
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26 # Xcode 26.x; Expo SDK 58 needs Xcode >= 26.4
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      # npm ci deletes node_modules, so on a cache hit we skip it entirely.
+      - name: Cache node_modules
+        id: nm
+        uses: actions/cache@v6
+        with:
+          path: app/node_modules
+          key: nm-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+
+      - name: npm ci
+        if: steps.nm.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # Generates app/ios from app.json (it is not committed).
+      - name: expo prebuild
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Cache Pods
+        uses: actions/cache@v6
+        with:
+          path: app/ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('app/package-lock.json', 'app/ios/Podfile', 'app/app.json') }}
+
+      - name: pod install
+        working-directory: app/ios
+        run: pod install
+
+      - name: xcodebuild (Debug, iphoneos, unsigned)
+        run: |
+          set -o pipefail
+          WORKSPACE=$(ls -d ios/*.xcworkspace | head -1)
+          SCHEME=$(basename "$WORKSPACE" .xcworkspace)
+          echo "Workspace $WORKSPACE, scheme $SCHEME"
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee xcodebuild.log | xcbeautify --quieter
+
+      - name: Package unsigned .ipa
+        run: |
+          rm -rf Payload && mkdir Payload
+          cp -R build/Build/Products/Debug-iphoneos/*.app Payload/
+          zip -qry LiveInterpreter.ipa Payload
+          ls -lh LiveInterpreter.ipa
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: LiveInterpreter-ipa
+          path: app/LiveInterpreter.ipa
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-log
+          path: app/xcodebuild.log
+          if-no-files-found: ignore

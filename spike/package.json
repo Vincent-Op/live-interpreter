@@ -1,0 +1,22 @@
+{
+  "name": "live-interpreter-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "samples": ".venv/Scripts/python make_samples.py",
+    "probe": "tsx src/spike.ts --probe",
+    "ptt": "tsx src/spike.ts --ptt --no-transcribe",
+    "spike": "tsx src/spike.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "opencc-js": "^1.4.2",
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

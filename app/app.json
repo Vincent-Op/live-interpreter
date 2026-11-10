@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "LiveInterpreter",
+    "slug": "live-interpreter",
+    "scheme": "liveinterpreter",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.vincentop.liveinterpreter",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "LiveInterpreter listens to the conversation so it can translate it.",
+        "UIBackgroundModes": ["audio"],
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "plugins": ["expo-dev-client"]
+  }
+}
