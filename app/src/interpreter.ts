@@ -6,6 +6,7 @@ import {
   IDLE_STOP_MS,
   KEEP_SILENT_CHUNKS,
   ME_DONE_AFTER_MS,
+  NO_RESULT_AFTER_MS,
   SESSION_REFRESH_BEFORE_EXPIRY_S,
   STOP_SILENCE_CHUNKS,
   TRANSCRIBE_USD_PER_MIN,
@@ -60,6 +61,8 @@ export type Entry = {
   original: string; // what was said (only if showOriginal)
   translation: string;
   startedAt: number;
+  /** Set when the turn ended and no translation arrived: nothing usable was heard. */
+  noResult?: 'unclear' | 'sameLanguage';
 };
 
 export type InterpreterState = {
@@ -261,6 +264,24 @@ export class Interpreter {
     }
     this.set({ turn: null });
     this.updateCost();
+    const entry = this.current[who];
+    if (entry) setTimeout(() => this.checkNoResult(entry.id), NO_RESULT_AFTER_MS);
+  }
+
+  /**
+   * Noise, mumbling, an accidental tap, or speech already in the target language produces no
+   * translation at all. Instead of "Translating…" forever, say so.
+   */
+  private checkNoResult(id: number) {
+    const entry = this.state.entries.find((e) => e.id === id);
+    if (!entry || entry.translation.trim() || entry.noResult) return;
+    const original = entry.original.trim();
+    const saidChinese = /[㐀-鿿]/.test(original);
+    // THEM expects Chinese and ME expects English; the other language isn't translated.
+    const sameLanguage = !!original && (entry.who === 'them' ? !saidChinese : saidChinese);
+    const updated: Entry = { ...entry, noResult: sameLanguage ? 'sameLanguage' : 'unclear' };
+    if (this.current[entry.who]?.id === id) this.current[entry.who] = updated;
+    this.set({ entries: this.state.entries.map((e) => (e.id === id ? updated : e)) });
   }
 
   /** Once the Mandarin translation has stopped arriving, let the speaker go back to the AirPods. */
@@ -395,7 +416,8 @@ export class Interpreter {
       this.current[who] = entry;
       this.state.entries = [...this.state.entries, entry];
     }
-    const updated = { ...entry, [field]: entry[field] + delta };
+    const updated: Entry = { ...entry, [field]: entry[field] + delta };
+    if (field === 'translation') delete updated.noResult; // a late translation still wins
     this.current[who] = updated;
     this.set({ entries: this.state.entries.map((e) => (e.id === updated.id ? updated : e)) });
   }

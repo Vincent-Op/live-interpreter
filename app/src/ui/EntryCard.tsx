@@ -35,9 +35,22 @@ export function EntryCard({ entry, live, onPress }: { entry: Entry; live: boolea
         {!!translation && <Ionicons name="expand-outline" size={14} color={colors.faint} />}
       </View>
       {!!original && <Text style={styles.original}>{original}</Text>}
-      <Text style={[styles.translation, !them && styles.zh, !translation && styles.placeholder]}>
-        {translation || (live ? 'Listening…' : 'Translating…')}
-      </Text>
+      {translation ? (
+        <Text style={[styles.translation, !them && styles.zh]}>{translation}</Text>
+      ) : entry.noResult ? (
+        <View style={styles.noResult}>
+          <Ionicons name="help-circle-outline" size={16} color={colors.warn} />
+          <Text style={styles.noResultText}>
+            {entry.noResult === 'sameLanguage'
+              ? them
+                ? 'Nothing to translate: that sounded like English already.'
+                : 'Nothing to translate: that sounded like Chinese already.'
+              : "Couldn't make that out. Try again a little closer to the phone."}
+          </Text>
+        </View>
+      ) : (
+        <Text style={[styles.translation, styles.placeholder]}>{live ? 'Listening…' : 'Translating…'}</Text>
+      )}
     </Pressable>
   );
 }
@@ -54,4 +67,6 @@ const styles = StyleSheet.create({
   translation: { color: colors.text, fontSize: 18, lineHeight: 26, fontWeight: '500' },
   zh: { fontSize: 22, lineHeight: 32 },
   placeholder: { color: colors.faint, fontStyle: 'italic', fontSize: 16 },
+  noResult: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
+  noResultText: { flex: 1, color: colors.muted, fontSize: 14, lineHeight: 20 },
 });
